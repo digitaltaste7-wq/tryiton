@@ -1,0 +1,17 @@
+{
+  "name": "tryon",
+  "version": "1.0.0",
+  "description": "TryOn \u2014 AI virtual try-on for any online store",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  }
+}
