@@ -98,18 +98,24 @@ export async function tryOn({ person, product, prompt, ratio }) {
     await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2500));
     return `data:${person.mime};base64,${person.data}`;
   }
-  let model = MODEL;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let model = MODEL, last = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return await callGemini(model, prompt, person, product, ratio);
     } catch (e) {
-      if ((e.status === 404 || e.status === 400 && /model/i.test(e.message)) && model !== FALLBACK) { model = FALLBACK; continue; }
+      last = e;
+      console.error(`[tryon] google said (${model}, try ${attempt + 1}):`, e.status || '', String(e.message).slice(0, 300));
+      if ((e.status === 404 || (e.status === 400 && /model/i.test(e.message))) && model !== FALLBACK) { model = FALLBACK; continue; }
+      // "limit: 0" = this Google project has no image quota (billing not active) - retrying will not help
+      if (e.status === 429 && /limit:\s*0\b|free.?tier/i.test(e.message)) throw new Error('Google quota is 0 - billing is not active on this API key: ' + e.message.slice(0, 160));
       if ([429, 500, 502, 503, 504].includes(e.status) || e.name === 'AbortError') {
-        await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+        const hint = /retry in ([\d.]+)s/i.exec(e.message || '');
+        const wait = hint ? Math.min(30, Number(hint[1]) + 1) * 1000 : 3000 * 2 ** attempt;
+        await new Promise((r) => setTimeout(r, wait + Math.random() * 1000));
         continue;
       }
       throw e;
     }
   }
-  throw new Error('AI is busy, please try again.');
+  throw new Error('Google kept refusing: ' + (last?.status || '') + ' ' + String(last?.message || '').slice(0, 160));
 }

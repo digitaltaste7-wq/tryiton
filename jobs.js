@@ -5,7 +5,7 @@ import { tryOn, loadProductImage, buildPrompt, nearestRatio } from './ai.js';
 import { db, bumpUsage } from './db.js';
 
 const JOB_TTL = 6 * 3600e3;
-const PER_JOB = 6;      // generations running at once for one shopper
+const PER_JOB = Number(process.env.PER_JOB || 3); // generations running at once for one shopper
 const GLOBAL = Number(process.env.MAX_PARALLEL || 24); // across all shoppers
 const jobs = new Map();
 let running = 0;
