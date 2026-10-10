@@ -193,7 +193,7 @@ export function previewPage({ site, products, appUrl }) {
 </section>
 <section class="coll"><div class="ch"><h2>The Collection</h2><span>${products.length} pieces</span></div>
 <div class="grid">
-${products.map((p) => `<a class="item" href="${esc(p.url || '#')}" target="_blank" rel="noopener"><div class="ph"><img src="${esc(p.image)}" alt="${esc(p.title)}"></div><div class="meta"><span>${esc(p.title)}</span><span>${fmt(p.price)}</span></div></a>`).join('')}
+${products.map((p) => `<a class="item" data-tryon-product="${p.id}" href="${esc(p.url || '#')}" target="_blank" rel="noopener"><div class="ph"><img src="${esc(p.image)}" alt="${esc(p.title)}"></div><div class="meta"><span>${esc(p.title)}</span><span>${fmt(p.price)}</span></div></a>`).join('')}
 </div></section>
 <footer>Shop products link to ${esc(site.domain)}.</footer>
 <script src="${appUrl}/w.js" data-site="${site.key}" data-preview="1" async></script>

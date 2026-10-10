@@ -142,6 +142,13 @@
     document.addEventListener('click', function (e) {
       var t = e.target.closest && e.target.closest('[data-tryon-open]');
       if (t) { e.preventDefault(); open(); }
+      // A product on the page that already has a look: open the big TryOn view instead of leaving the page
+      var pr = e.target.closest && e.target.closest('[data-tryon-product]');
+      if (pr && state && state.looks[pr.getAttribute('data-tryon-product')]) {
+        e.preventDefault();
+        els.overlay.hidden = false; document.documentElement.style.overflow = 'hidden';
+        showDetail(pr.getAttribute('data-tryon-product'));
+      }
     });
   }
 
