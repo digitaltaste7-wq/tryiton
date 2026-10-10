@@ -2,12 +2,12 @@
 import express from 'express';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { db, now, getUsage, imageAllowance } from './src/db.js';
-import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './src/auth.js';
-import { normalizeUrl, importCatalog } from './src/catalog.js';
-import { createJob, getJob, allowIp } from './src/jobs.js';
-import { MOCK } from './src/ai.js';
-import { layout, landing, authPage, sitesPage, sitePage, previewPage, SUBS } from './src/views.js';
+import { db, now, getUsage, imageAllowance } from './db.js';
+import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './auth.js';
+import { normalizeUrl, importCatalog } from './catalog.js';
+import { createJob, getJob, allowIp } from './jobs.js';
+import { MOCK } from './ai.js';
+import { layout, landing, authPage, sitesPage, sitePage, previewPage, SUBS } from './views.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -16,11 +16,14 @@ const app = express();
 app.set('trust proxy', true);
 app.disable('x-powered-by');
 
-app.use(express.static(path.resolve('public'), { maxAge: '5m', index: false }));
+// Public files live next to server.js; only these are served
+for (const f of ['app.css', 'app.js', 'preview.css']) {
+  app.get('/' + f, (req, res) => { res.setHeader('Cache-Control', 'public, max-age=300'); res.sendFile(path.resolve(f)); });
+}
 app.get('/w.js', (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.sendFile(path.resolve('public/widget.js'));
+  res.sendFile(path.resolve('widget.js'));
 });
 app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK }));
 
