@@ -155,6 +155,7 @@ ${manual ? `<section class="card">
       <label>Button colour<input type="color" name="accent" value="${esc(site.accent || '#1e1b18')}"></label>
       <label>Position<select name="position"><option value="right"${site.position !== 'left' ? ' selected' : ''}>Bottom right</option><option value="left"${site.position === 'left' ? ' selected' : ''}>Bottom left</option></select></label>
     </div>
+    ${site.niche === 'clothing' ? `<label>Sells clothes for<select name="audience"><option value="women"${site.audience === 'women' ? ' selected' : ''}>Women</option><option value="men"${site.audience === 'men' ? ' selected' : ''}>Men</option><option value="both"${site.audience === 'both' || !site.audience ? ' selected' : ''}>Women &amp; Men</option></select></label>` : ''}
     <label>Pieces per shopper<input type="number" name="per_shopper" min="1" max="24" value="${site.per_shopper}"></label>
     <label class="check"><input type="checkbox" name="enabled" ${site.enabled ? 'checked' : ''}> TryOn is switched on</label>
     <button class="btn">Save</button>

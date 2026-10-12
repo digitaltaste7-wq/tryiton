@@ -271,6 +271,19 @@ function decode(s) {
   return String(s || '').replace(/&amp;/g, '&').replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&#8211;/g, '–').replace(/&#8217;/g, '’').replace(/&#x27;/g, "'").replace(/<[^>]+>/g, '').trim();
 }
 
+export function audienceOf(products) {
+  let w = 0, m = 0, dresses = 0;
+  for (const p of products) {
+    if (p.category !== 'clothing') continue;
+    if (p.gender === 'women') w++; else if (p.gender === 'men') m++;
+    if (p.sub === 'dress') dresses++;
+  }
+  if (w && m) return 'both';
+  if (m) return 'men';
+  if (w || dresses) return 'women';
+  return null; // unknown: shoppers are asked, and nothing is assumed
+}
+
 function finish(res) {
   res.products = res.products.slice(0, 500).map((p, i) => ({ ...p, ...classify(p), position: i }));
   res.niche = guessNiche(res.products);
@@ -280,6 +293,7 @@ function finish(res) {
       if (!p.category && !SKIP.test([p.title, p.type, (p.tags || []).join(' ')].join(' '))) { p.category = 'clothing'; p.sub = 'top'; p.gender = genderOf(p, 'top'); }
     }
   }
+  res.audience = audienceOf(res.products);
   return res;
 }
 

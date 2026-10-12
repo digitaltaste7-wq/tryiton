@@ -11,7 +11,7 @@
   var API = new URL(script.src).origin + '/api/w/' + encodeURIComponent(SITE);
   var cfg = null, state = null, shadow = null, root = null, els = {};
   var pollTimer = null, pollErrors = 0;
-  var LOOK_VERSION = 2; // bump to discard looks saved by an older version
+  var LOOK_VERSION = 3; // bump to discard looks saved by an older version
 
   // ---------------- small helpers ----------------
   function h(tag, attrs, kids) {
@@ -62,7 +62,7 @@
   }
   function save() {
     if (!state) return;
-    var copy = { v: LOOK_VERSION, name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, failed: state.failed, at: state.at, finished: state.finished };
+    var copy = { v: LOOK_VERSION, gender: state.gender, name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, failed: state.failed, at: state.at, finished: state.finished };
     idb().then(function (d) { d.transaction(STORE, 'readwrite').objectStore(STORE).put(copy, SITE); }).catch(function () {});
   }
   function load() {
@@ -108,8 +108,9 @@
   function pickProducts(kind) {
     var allow = FITS[kind] || null;
     var g = bothGenders() ? draft.gender : null;
-    var pool = cfg.products.filter(function (p) { return !g || !p.gender || p.gender === g || p.gender === 'unisex'; });
-    if (!pool.length) pool = cfg.products.slice();
+    var pool = cfg.products.filter(function (p) { var pg = genderOfProduct(p); return !g || !pg || pg === g || pg === 'unisex'; });
+    if (!pool.length && !g) pool = cfg.products.slice();
+    if (!pool.length) return [];
     var list = pool.filter(function (p) { return !allow || allow.indexOf(p.sub) >= 0; });
     if (!list.length) list = pool.slice();
     var here = location.pathname.replace(/\/$/, '');
@@ -187,19 +188,11 @@
         draft.kind = k[0]; [].forEach.call(chips.children, function (b) { b.className = ''; }); e.currentTarget.className = 'on';
       } });
     }));
-    // Clothing stores that sell both: ask who they're shopping for first
-    var both = bothGenders(), gchips = null;
-    if (both) gchips = h('div', { class: 'seg big' }, [['women', 'Women'], ['men', 'Men']].map(function (g) {
-      return h('button', { type: 'button', class: draft.gender === g[0] ? 'on' : '', text: g[1], onclick: function (e) {
-        draft.gender = g[0]; [].forEach.call(gchips.children, function (b) { b.className = ''; }); e.currentTarget.className = 'on'; err.hidden = true;
-      } });
-    }));
     var box = h('input', { type: 'checkbox', checked: draft.consent || null });
     var err = h('p', { class: 'err', hidden: true });
     var go = h('button', { class: 'primary', type: 'button', text: 'Continue', onclick: function () {
       draft.name = name.value.trim().replace(/[<>]/g, '');
       draft.consent = box.checked;
-      if (both && !draft.gender) { err.textContent = 'Please choose Women or Men.'; err.hidden = false; return; }
       if (!draft.name) { err.textContent = 'Please add a name.'; err.hidden = false; name.focus(); return; }
       if (!draft.consent) { err.textContent = 'Please tick the box to continue.'; err.hidden = false; return; }
       showStep2();
@@ -208,21 +201,17 @@
     frame([
       h('p', { class: 'eyebrow', text: 'Step 1 of 2' }),
       h('h2', { text: c.step1 }),
-      both ? h('label', { class: 'lbl', text: 'Shopping for' }) : null, gchips,
       h('label', { class: 'lbl', text: c.nameLabel }), name,
       h('label', { class: 'lbl', text: c.q }), chips,
       h('label', { class: 'consent' }, [box, h('span', { text: c.consent })]),
       err, go,
       h('p', { class: 'pw' }, ['Powered by ', h('b', { text: 'TryOn' })]),
     ]);
-    if (!both) setTimeout(function () { name.focus(); }, 30);
+    setTimeout(function () { name.focus(); }, 30);
   }
-  function bothGenders() {
-    if (cfg.niche !== 'clothing') return false;
-    var w = 0, m = 0;
-    cfg.products.forEach(function (p) { if (p.gender === 'women') w++; else if (p.gender === 'men') m++; });
-    return w > 0 && m > 0;
-  }
+  // Clothing: always ask who they're shopping for, so a man is never shown in a dress
+  function bothGenders() { return cfg.niche === 'clothing'; }
+  function genderOfProduct(p) { return p.gender || (cfg.audience === 'women' || cfg.audience === 'men' ? cfg.audience : null); }
 
   // ---------------- step 2: photo ----------------
   function showStep2() {
@@ -232,6 +221,13 @@
       h('span', { class: 'plus', text: '+' }), h('span', { text: 'Tap to choose a photo' })]);
     var err = h('p', { class: 'err', hidden: true });
     var go = h('button', { class: 'primary', type: 'button', text: 'Create my lookbook', disabled: true });
+    // Clothing: who is this lookbook for? Only that side of the collection is made.
+    var both = bothGenders(), gchips = null;
+    if (both) gchips = h('div', { class: 'seg big' }, [['women', 'Women'], ['men', 'Men']].map(function (g) {
+      return h('button', { type: 'button', class: draft.gender === g[0] ? 'on' : '', text: g[1], onclick: function (e) {
+        draft.gender = g[0]; [].forEach.call(gchips.children, function (b) { b.className = ''; }); e.currentTarget.className = 'on'; err.hidden = true;
+      } });
+    }));
     function showFile(f) {
       draft.file = f;
       var url = URL.createObjectURL(f);
@@ -245,12 +241,15 @@
     drop.addEventListener('drop', function (e) { e.preventDefault(); if (e.dataTransfer.files[0]) showFile(e.dataTransfer.files[0]); });
     if (draft.file) showFile(draft.file);
     go.addEventListener('click', function () {
+      if (both && !draft.gender) { err.textContent = 'Please choose Women or Men.'; err.hidden = false; return; }
+      if (both && !pickProducts(draft.kind).length) { err.textContent = 'Sorry — ' + cfg.name + ' doesn’t have ' + (draft.gender === 'men' ? 'men’s' : 'women’s') + ' pieces to try on yet.'; err.hidden = false; return; }
       go.disabled = true; go.textContent = 'Uploading…'; err.hidden = true;
       start().catch(function (e) { err.textContent = e.message; err.hidden = false; go.disabled = false; go.textContent = 'Create my lookbook'; });
     });
     frame([
       h('p', { class: 'eyebrow', text: 'Step 2 of 2' }),
       h('h2', { text: c.add(draft.name) }),
+      both ? h('label', { class: 'lbl first', text: 'Who is this lookbook for?' }) : null, gchips,
       h('div', { class: 'tips' }, c.tips.map(function (t) { return h('span', { text: t }); })),
       drop, input, err, go,
       h('button', { class: 'link', type: 'button', text: 'Back', onclick: showStep1 }),
@@ -289,7 +288,7 @@
         body: JSON.stringify({ photo: ph.data, w: ph.w, h: ph.h, name: draft.name, species: cfg.niche === 'pet' ? draft.kind : null, products: picks.map(function (p) { return p.id; }) }),
       });
     }).then(function (r) {
-      state = { name: draft.name, kind: draft.kind, job: r.job, ids: r.products.map(String), looks: {}, failed: {}, at: Date.now(), finished: false };
+      state = { name: draft.name, kind: draft.kind, gender: bothGenders() ? draft.gender : null, job: r.job, ids: r.products.map(String), looks: {}, failed: {}, at: Date.now(), finished: false };
       save();
       showProgress();
       poll();
@@ -382,7 +381,7 @@
     els.bhead = h('p', { class: 'muted' });
     els.grid = h('div', { class: 'grid' });
     frame([
-      h('p', { class: 'eyebrow', text: 'Your lookbook' }),
+      h('p', { class: 'eyebrow', text: state.gender ? 'Your lookbook · ' + (state.gender === 'men' ? 'Men' : 'Women') : 'Your lookbook' }),
       h('h2', { text: copy().ready(state.name) }),
       els.bhead, els.grid,
       h('div', { class: 'foot' }, [
@@ -555,6 +554,7 @@
     '.seg button{border:1px solid #d9d2c7;background:#fff;border-radius:10px;padding:10px 6px;font-size:14px}',
     '.seg button.on{background:var(--ink);color:#fff;border-color:var(--ink)}',
     '.seg.big button{padding:13px 6px;font-size:15px;font-weight:600}',
+    '.lbl.first{margin-top:0}','.seg.big{margin-bottom:16px}',
     '.consent{display:flex;gap:10px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:16px 0 4px}',
     '.consent input{margin-top:3px;accent-color:var(--ink)}',
     '.primary,.secondary{display:block;width:100%;text-align:center;border-radius:12px;padding:14px;font-weight:600;margin-top:14px;text-decoration:none;font-size:15px}',

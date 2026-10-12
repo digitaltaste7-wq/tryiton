@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, now, getUsage, imageAllowance } from './db.js';
 import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './auth.js';
-import { normalizeUrl, importCatalog, importFromUrls, classify, genderOf } from './catalog.js';
+import { normalizeUrl, importCatalog, importFromUrls, classify, genderOf, audienceOf } from './catalog.js';
 import fs from 'node:fs';
 import { createJob, getJob, allowIp, retryItem } from './jobs.js';
 import { MOCK } from './ai.js';
@@ -26,7 +26,7 @@ app.get('/w.js', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.resolve('widget.js'));
 });
-app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v5-men-women' }));
+app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v7-gender-on-photo' }));
 
 // =================== Widget API (called from shops' websites) ===================
 const widget = express.Router();
@@ -71,6 +71,7 @@ widget.get('/:key/config', (req, res) => {
   res.json({
     enabled: !!site.enabled, name: site.name || site.domain, niche: site.niche, currency: site.currency,
     platform: site.platform, accent: site.accent, position: site.position,
+    audience: site.niche === 'clothing' ? (site.audience || audienceOf(widgetProducts(site.id).map((p) => ({ ...p, category: p.category }))) || null) : null,
     buttonText: site.button_text || (site.niche === 'pet' ? 'See it on your pet' : 'See it on you'),
     perShopper: site.per_shopper, available: Math.max(0, imageAllowance(site) - used),
     products: widgetProducts(site.id),
@@ -89,6 +90,7 @@ widget.post('/:key/start', (req, res) => {
   const all = widgetProducts(site.id);
   const byId = new Map(all.map((p) => [String(p.id), p]));
   const ids = [...new Set((req.body.products || []).map(String))].filter((id) => byId.has(id));
+  if (Array.isArray(req.body.products) && !ids.length) return res.status(400).json({ error: 'There are no pieces to try on for this choice.' });
   let chosen = (ids.length ? ids.map((id) => byId.get(id)) : all).slice(0, Math.max(1, site.per_shopper));
   const left = imageAllowance(site) - getUsage(site.id).images;
   if (left <= 0) return res.status(402).json({ error: 'TryOn is resting for now — please check back soon.' });
@@ -191,6 +193,7 @@ async function addSite(userId, rawUrl) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(userId, key, origin, domain, cat.name || prettyName(domain), cat.platform, cat.niche || 'clothing', cat.currency || null, now(), now());
   const siteId = Number(r.lastInsertRowid);
   saveProducts(siteId, cat.products, cat.niche);
+  if (cat.audience) db.prepare('UPDATE sites SET audience = ? WHERE id = ?').run(cat.audience, siteId);
   return siteId;
 }
 function prettyName(domain) {
@@ -226,7 +229,7 @@ app.get('/app/sites/:id', needUser, (req, res) => {
   const flash = req.query.new && site.platform === 'manual' ? `${site.name} is ready. Upload its product photos below, then share the preview link.` : req.query.new ? (products.length ? `We found ${products.length} products on ${site.domain}. Open the preview to see TryOn on them.` : `We couldn't read products from ${site.domain} automatically. Add them below — paste product links or upload product photos.`) :
     req.query.added ? `Added ${req.query.added} product${req.query.added === '1' ? '' : 's'}.${Number(req.query.missed) ? ` ${req.query.missed} link(s) could not be read — try uploading those as photos.` : ''}` : req.query.saved ? 'Saved.' : req.query.error || '';
   page(res, { title: site.name || site.domain, user: req.user, wide: true,
-    body: sitePage({ site, products, usage: getUsage(site.id), allowance: imageAllowance(site), appUrl: APP_URL, admin: isAdmin(req.user), flash }) });
+    body: sitePage({ site: { ...site, audience: site.audience || audienceOf(products) }, products, usage: getUsage(site.id), allowance: imageAllowance(site), appUrl: APP_URL, admin: isAdmin(req.user), flash }) });
 });
 app.get('/app/sites/:id/status', needUser, (req, res) => {
   const site = ownSite(req, res); if (!site) return;
@@ -237,9 +240,9 @@ app.post('/app/sites/:id/settings', needUser, (req, res) => {
   const b = req.body;
   const niche = ['pet', 'jewellery', 'clothing'].includes(b.niche) ? b.niche : site.niche;
   const accent = /^#[0-9a-f]{6}$/i.test(b.accent || '') ? b.accent : site.accent;
-  db.prepare(`UPDATE sites SET name = ?, button_text = ?, niche = ?, accent = ?, position = ?, per_shopper = ?, enabled = ? WHERE id = ?`)
+  db.prepare(`UPDATE sites SET name = ?, button_text = ?, niche = ?, accent = ?, position = ?, per_shopper = ?, enabled = ?, audience = ? WHERE id = ?`)
     .run(String(b.name || '').slice(0, 80) || site.name, String(b.button_text || '').slice(0, 40) || null, niche, accent,
-      b.position === 'left' ? 'left' : 'right', Math.min(24, Math.max(1, Number(b.per_shopper) || 12)), b.enabled ? 1 : 0, site.id);
+      b.position === 'left' ? 'left' : 'right', Math.min(24, Math.max(1, Number(b.per_shopper) || 12)), b.enabled ? 1 : 0, ['women', 'men', 'both'].includes(b.audience) ? b.audience : site.audience, site.id);
   res.redirect(`/app/sites/${site.id}?saved=1`);
 });
 app.post('/app/sites/:id/products', needUser, (req, res) => {
@@ -268,7 +271,7 @@ app.post('/app/sites/:id/reimport', needUser, async (req, res) => {
     db.prepare("DELETE FROM products WHERE site_id = ? AND (ext_id IS NULL OR ext_id NOT LIKE 'added:%')").run(site.id);
     saveProducts(site.id, cat.products.map((p) => { const o = old.get(p.ext_id || p.title); return o ? { ...p, category: o.category, sub: o.sub, gender: o.gender ?? p.gender } : p; }), site.niche);
     for (const [k, o] of old) if (!o.include) db.prepare('UPDATE products SET include = 0 WHERE site_id = ? AND (ext_id = ? OR title = ?)').run(site.id, k, k);
-    db.prepare('UPDATE sites SET imported_at = ? WHERE id = ?').run(now(), site.id);
+    db.prepare('UPDATE sites SET imported_at = ?, audience = COALESCE(audience, ?) WHERE id = ?').run(now(), cat.audience || null, site.id);
     res.redirect(`/app/sites/${site.id}?saved=1`);
   } catch (e) { res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent(e.message)); }
 });
