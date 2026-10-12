@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS usage (
 );
 `);
 
+// Columns added after launch (safe to run on an existing database)
+for (const sql of [`ALTER TABLE sites ADD COLUMN quality TEXT DEFAULT 'standard'`]) {
+  try { db.exec(sql); } catch { /* already there */ }
+}
+
 export const month = () => new Date().toISOString().slice(0, 7);
 export const now = () => Date.now();
 
