@@ -72,6 +72,13 @@ export function sitesPage({ sites, error, admin }) {
   <input name="url" placeholder="yourstore.com" required aria-label="Website address">
   <button class="btn">Add website</button>
 </form>
+<details class="card nosite"><summary><b>No website?</b> <span class="muted">Create a store for a brand that sells on Instagram or WhatsApp, then upload its product photos.</span></summary>
+<form method="post" action="/app/demo-store" class="row gap" style="margin-top:14px">
+  <input name="name" placeholder="Brand name, e.g. DOR Clothing" required aria-label="Brand name" style="flex:1;min-width:200px">
+  <select name="niche" aria-label="Store type"><option value="clothing">Clothing</option><option value="jewellery">Jewellery</option><option value="pet">Pet</option></select>
+  <select name="currency" aria-label="Currency"><option>USD</option><option>INR</option><option>AED</option><option>GBP</option><option>EUR</option><option>AUD</option><option>CAD</option></select>
+  <button class="btn">Create store</button>
+</form></details>
 ${error ? `<p class="err">${esc(error)}</p>` : ''}
 <div class="sites">
 ${sites.map((s) => `<a class="card site" href="/app/sites/${s.id}">
@@ -84,6 +91,7 @@ ${sites.map((s) => `<a class="card site" href="/app/sites/${s.id}">
 
 export function sitePage({ site, products, usage, allowance, appUrl, admin, flash }) {
   const snippet = `<script src="${appUrl}/w.js" data-site="${site.key}" async></script>`;
+  const manual = site.platform === 'manual';
   const included = products.filter((p) => p.include && p.category).length;
   const pct = Math.min(100, Math.round((usage.images / Math.max(1, allowance)) * 100));
   const opt = (p) => {
@@ -99,7 +107,7 @@ export function sitePage({ site, products, usage, allowance, appUrl, admin, flas
 ${flash ? `<p class="flash">${esc(flash)}</p>` : ''}
 <div class="row between head">
   <div><h1 class="h2">${esc(site.name || site.domain)}</h1>
-  <p class="muted"><a href="${esc(site.url)}" target="_blank" rel="noopener">${esc(site.domain)}</a> · ${esc(cap(site.platform || 'website'))} · ${NICHE[site.niche] || ''} store · ${included} products ready</p></div>
+  <p class="muted">${manual ? 'No website' : `<a href="${esc(site.url)}" target="_blank" rel="noopener">${esc(site.domain)}</a> · ${esc(cap(site.platform || 'website'))}`} · ${NICHE[site.niche] || ''} store · ${included} products ready</p></div>
   <a class="btn" href="/preview/${site.key}" target="_blank" rel="noopener">Open live preview ↗</a>
 </div>
 
@@ -110,7 +118,11 @@ ${flash ? `<p class="flash">${esc(flash)}</p>` : ''}
   <div class="row gap"><a class="btn ghost" href="/preview/${site.key}" target="_blank" rel="noopener">Open preview ↗</a>
   <button class="btn ghost" data-copy="${esc(appUrl + '/preview/' + site.key)}">Copy preview link</button></div>
 </section>
-<section class="card" id="install" data-site="${site.id}">
+${manual ? `<section class="card">
+  <p class="step">No website</p><h2>Share the preview link</h2>
+  <p>This store has no website, so there's nothing to install. Send the preview link — on Instagram, WhatsApp or email — and shoppers can try every piece on themselves there.</p>
+</section>
+</div>` : `<section class="card" id="install" data-site="${site.id}">
   <p class="step">Step 3</p><h2>Installation check</h2>
   <div class="status ${site.last_seen_at ? 'on' : ''}"><i></i><span>${site.last_seen_at ? 'Live on your website' : 'Waiting for your website…'}</span></div>
   <p class="muted small" data-seen>${site.last_seen_at ? 'Last seen on ' + esc(site.last_seen_url || site.domain) : 'Once you add the line below, open your store once and this turns green.'}</p>
@@ -130,7 +142,7 @@ ${flash ? `<p class="flash">${esc(flash)}</p>` : ''}
     <ol data-pane="Squarespace"><li>Go to <b>Settings → Advanced → Code Injection</b> (Business plan or higher).</li><li>Paste the line into the <b>Footer</b> box and <b>Save</b>.</li><li>Open your store once.</li></ol>
     <ol data-pane="Other"><li>Paste the line just before <code>&lt;/body&gt;</code> on every page (most builders have a “footer code” or “custom code” setting).</li><li>Open your store once.</li><li>Stuck? Send this line to whoever manages your website.</li></ol>
   </div>
-</section>
+</section>`}
 
 <div class="grid2">
 <section class="card">
@@ -157,11 +169,31 @@ ${flash ? `<p class="flash">${esc(flash)}</p>` : ''}
     <div class="row gap"><label class="grow">Plan<select name="plan"><option value="trial"${site.plan !== 'active' ? ' selected' : ''}>Trial</option><option value="active"${site.plan === 'active' ? ' selected' : ''}>Active (paid)</option></select></label>
     <label class="grow">Monthly images<input type="number" name="monthly_limit" value="${site.monthly_limit}" min="0"></label></div>
     <label>AI quality<select name="quality"><option value="standard"${site.quality !== 'premium' ? ' selected' : ''}>Standard — Nano Banana 2 (about $0.07 per look)</option><option value="premium"${site.quality === 'premium' ? ' selected' : ''}>Premium — Nano Banana Pro (about $0.14 per look)</option></select></label><button class="btn sm">Update plan</button></form>` : ''}
-  <form method="post" action="/app/sites/${site.id}/reimport" data-busy="Refreshing products…"><button class="btn ghost sm">Refresh products from website</button></form>
+  ${manual ? '' : `<form method="post" action="/app/sites/${site.id}/reimport" data-busy="Refreshing products…"><button class="btn ghost sm">Refresh products from website</button></form>`}
 </section>
 </div>
 
-<section class="card">
+<section class="card" id="add">
+  <h2>Add products</h2>
+  <p class="muted small">${products.length ? 'Missing something? Add more pieces here.' : 'Add the pieces shoppers should try on.'}</p>
+  <div class="grid2 addgrid">
+    ${manual ? '' : `<form method="post" action="/app/sites/${site.id}/add-links" class="form" data-busy="Reading those pages…">
+      <label>Paste product page links <span class="muted">(one per line)</span><textarea name="links" rows="5" placeholder="${esc(site.url)}/products/…"></textarea></label>
+      <button class="btn">Add from links</button>
+    </form>`}
+    <form class="form" data-photo-form="${site.id}">
+      <label>Product photo<input type="file" name="photo" accept="image/*" required></label>
+      <label>Product name<input name="title" required placeholder="e.g. Linen Wrap Dress"></label>
+      <div class="row gap"><label class="grow">Price<input name="price" inputmode="decimal" placeholder="e.g. 89"></label>
+      <label class="grow">Type<select name="kind">${Object.entries(SUBS).map(([c, subs]) => `<optgroup label="${NICHE[c]}">` + subs.map((x) => `<option value="${c}:${x}"${c === site.niche && x === SUBS[c][0] ? ' selected' : ''}>${NICHE[c]} · ${cap(x)}</option>`).join('') + '</optgroup>').join('')}</select></label></div>
+      <label>Link to buy it <span class="muted">(optional — Instagram post, WhatsApp, shop page)</span><input name="url" placeholder="https://"></label>
+      <button class="btn">Upload product</button>
+      <p class="muted small" data-photo-status></p>
+    </form>
+  </div>
+</section>
+
+<section class="card" id="products">
   <div class="row between"><h2>Products (${products.length})</h2><span class="muted small">Choose what each piece is, or switch it off.</span></div>
   <form method="post" action="/app/sites/${site.id}/products">
   <div class="plist">

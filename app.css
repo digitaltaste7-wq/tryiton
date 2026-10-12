@@ -76,3 +76,7 @@ input:focus,select:focus{outline:2px solid var(--gold2);outline-offset:1px}
 .savebar{padding:16px 0 0}
 .danger{text-align:center;margin-top:10px}
 @media (max-width:760px){.grid2,.steps3{grid-template-columns:1fr}.paste{flex-direction:column;align-items:stretch}.paste.card input{max-width:none}.hide-sm{display:none}.h2{font-size:28px}.stats b{font-size:24px}}
+.nosite summary{cursor:pointer;list-style:none}.nosite summary::-webkit-details-marker{display:none}
+.nosite select,.addgrid select{border:1px solid #d7cfc3;border-radius:10px;padding:11px 12px;font:15px Inter,sans-serif;background:#fff}
+.form textarea{display:block;width:100%;margin-top:6px;border:1px solid #d7cfc3;border-radius:10px;padding:11px 13px;font:14px/1.5 Inter,sans-serif;resize:vertical}
+.addgrid{margin-top:8px}.addgrid>form{background:var(--bg);border-radius:14px;padding:18px}

@@ -4,7 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, now, getUsage, imageAllowance } from './db.js';
 import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './auth.js';
-import { normalizeUrl, importCatalog } from './catalog.js';
+import { normalizeUrl, importCatalog, importFromUrls, classify } from './catalog.js';
+import fs from 'node:fs';
 import { createJob, getJob, allowIp, retryItem } from './jobs.js';
 import { MOCK } from './ai.js';
 import { layout, landing, authPage, sitesPage, sitePage, previewPage, SUBS } from './views.js';
@@ -25,7 +26,7 @@ app.get('/w.js', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.resolve('widget.js'));
 });
-app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'studio-v3' }));
+app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v4-any-website' }));
 
 // =================== Widget API (called from shops' websites) ===================
 const widget = express.Router();
@@ -187,7 +188,7 @@ async function addSite(userId, rawUrl) {
   const cat = await importCatalog(origin);
   const key = 'ty_' + crypto.randomBytes(9).toString('base64url');
   const r = db.prepare(`INSERT INTO sites (user_id, key, url, domain, name, platform, niche, currency, imported_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(userId, key, origin, domain, cat.name || prettyName(domain), cat.platform, cat.niche, cat.currency || null, now(), now());
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(userId, key, origin, domain, cat.name || prettyName(domain), cat.platform, cat.niche || 'clothing', cat.currency || null, now(), now());
   const siteId = Number(r.lastInsertRowid);
   saveProducts(siteId, cat.products, cat.niche);
   return siteId;
@@ -195,7 +196,7 @@ async function addSite(userId, rawUrl) {
 function prettyName(domain) {
   return domain.split('.')[0].replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
-function saveProducts(siteId, products, niche) {
+function saveProducts(siteId, products, niche, startPos = 0) {
   const ins = db.prepare(`INSERT INTO products (site_id, ext_id, title, url, image, price, variant_id, category, sub, include, position)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   db.exec('BEGIN');
@@ -203,7 +204,7 @@ function saveProducts(siteId, products, niche) {
     products.forEach((p, i) => {
       // Within a store of one niche, pieces we could not classify get switched off (merchant can turn on)
       const on = p.category && (p.category === niche || niche === 'clothing' || p.category !== 'clothing') ? 1 : 0;
-      ins.run(siteId, p.ext_id, p.title, p.url, p.image, p.price == null ? null : String(p.price), p.variant_id, p.category, p.sub, on, i);
+      ins.run(siteId, p.ext_id, p.title, p.url, p.image, p.price == null ? null : String(p.price), p.variant_id, p.category, p.sub, p.include ?? on, startPos + i);
     });
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -222,7 +223,8 @@ app.post('/app/sites', needUser, async (req, res) => {
 app.get('/app/sites/:id', needUser, (req, res) => {
   const site = ownSite(req, res); if (!site) return;
   const products = db.prepare('SELECT * FROM products WHERE site_id = ? ORDER BY include DESC, position').all(site.id);
-  const flash = req.query.new ? `We found ${products.length} products on ${site.domain}. Open the preview to see TryOn on them.` : req.query.saved ? 'Saved.' : req.query.error || '';
+  const flash = req.query.new && site.platform === 'manual' ? `${site.name} is ready. Upload its product photos below, then share the preview link.` : req.query.new ? (products.length ? `We found ${products.length} products on ${site.domain}. Open the preview to see TryOn on them.` : `We couldn't read products from ${site.domain} automatically. Add them below — paste product links or upload product photos.`) :
+    req.query.added ? `Added ${req.query.added} product${req.query.added === '1' ? '' : 's'}.${Number(req.query.missed) ? ` ${req.query.missed} link(s) could not be read — try uploading those as photos.` : ''}` : req.query.saved ? 'Saved.' : req.query.error || '';
   page(res, { title: site.name || site.domain, user: req.user, wide: true,
     body: sitePage({ site, products, usage: getUsage(site.id), allowance: imageAllowance(site), appUrl: APP_URL, admin: isAdmin(req.user), flash }) });
 });
@@ -257,16 +259,70 @@ app.post('/app/sites/:id/products', needUser, (req, res) => {
 app.post('/app/sites/:id/reimport', needUser, async (req, res) => {
   const site = ownSite(req, res); if (!site) return;
   try {
+    if (site.platform === 'manual') return res.redirect(`/app/sites/${site.id}`);
     const cat = await importCatalog(site.url);
+    if (!cat.products.length) return res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent('No products could be read automatically — your current products are unchanged.'));
     // keep the merchant's choices for products we already knew
     const old = new Map(db.prepare('SELECT ext_id, title, include, category, sub FROM products WHERE site_id = ?').all(site.id).map((p) => [p.ext_id || p.title, p]));
-    db.prepare('DELETE FROM products WHERE site_id = ?').run(site.id);
+    db.prepare("DELETE FROM products WHERE site_id = ? AND (ext_id IS NULL OR ext_id NOT LIKE 'added:%')").run(site.id);
     saveProducts(site.id, cat.products.map((p) => { const o = old.get(p.ext_id || p.title); return o ? { ...p, category: o.category, sub: o.sub } : p; }), site.niche);
     for (const [k, o] of old) if (!o.include) db.prepare('UPDATE products SET include = 0 WHERE site_id = ? AND (ext_id = ? OR title = ?)').run(site.id, k, k);
     db.prepare('UPDATE sites SET imported_at = ? WHERE id = ?').run(now(), site.id);
     res.redirect(`/app/sites/${site.id}?saved=1`);
   } catch (e) { res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent(e.message)); }
 });
+// ----- adding products by hand (any website, or no website at all) -----
+const MEDIA = path.join(process.env.DATA_DIR || path.resolve('data'), 'media');
+fs.mkdirSync(MEDIA, { recursive: true });
+app.get('/media/:file', (req, res) => {
+  if (!/^[a-zA-Z0-9_-]+\.(jpg|png|webp)$/.test(req.params.file)) return res.sendStatus(404);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(MEDIA, req.params.file), (e) => { if (e) res.sendStatus(404); });
+});
+function nextPos(siteId) { return (db.prepare('SELECT MAX(position) AS m FROM products WHERE site_id = ?').get(siteId).m ?? -1) + 1; }
+
+app.post('/app/sites/:id/add-links', needUser, async (req, res) => {
+  const site = ownSite(req, res); if (!site) return;
+  const urls = String(req.body.links || '').split(/[\s,]+/).filter(Boolean);
+  if (!urls.length) return res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent('Paste at least one product link.'));
+  try {
+    const { products, failed } = await importFromUrls(urls, site.niche);
+    saveProducts(site.id, products.map((p) => ({ ...p, ext_id: 'added:' + (p.ext_id || p.url), include: 1 })), site.niche, nextPos(site.id));
+    res.redirect(`/app/sites/${site.id}?added=${products.length}&missed=${failed}#products`);
+  } catch (e) { res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent(e.message)); }
+});
+
+app.post('/app/sites/:id/add-photo', needUser, express.json({ limit: '15mb' }), (req, res) => {
+  const site = ownSite(req, res); if (!site) return;
+  const { title, price, url, image, kind } = req.body || {};
+  const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(image || ''));
+  if (!m || !String(title || '').trim()) return res.status(400).json({ error: 'Add a product name and a photo.' });
+  const file = crypto.randomBytes(10).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
+  fs.writeFileSync(path.join(MEDIA, file), Buffer.from(m[2], 'base64'));
+  const p = { title: String(title).trim().slice(0, 140), type: '', tags: [] };
+  let { category, sub } = classify(p);
+  const [kc, ks] = String(kind || '').split(':');
+  if (SUBS[kc]?.includes(ks)) { category = kc; sub = ks; }
+  if (!category) { category = site.niche; sub = site.niche === 'pet' ? 'apparel' : site.niche === 'jewellery' ? 'necklace' : 'top'; }
+  saveProducts(site.id, [{
+    ext_id: 'added:' + file, title: p.title, url: /^https?:\/\//.test(url || '') ? String(url).slice(0, 500) : null,
+    image: `${APP_URL}/media/${file}`, price: String(price || '').replace(/[^0-9.]/g, '') || null, variant_id: null, category, sub, include: 1,
+  }], site.niche, nextPos(site.id));
+  res.json({ ok: true });
+});
+
+// A store with no website (e.g. sells on Instagram): products are added by photo
+app.post('/app/demo-store', needUser, (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0, 80);
+  if (!name) return res.redirect('/app?error=' + encodeURIComponent('Give the store a name.'));
+  const niche = ['pet', 'jewellery', 'clothing'].includes(req.body.niche) ? req.body.niche : 'clothing';
+  const key = 'ty_' + crypto.randomBytes(9).toString('base64url');
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'store';
+  const r = db.prepare(`INSERT INTO sites (user_id, key, url, domain, name, platform, niche, currency, imported_at, created_at)
+    VALUES (?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)`).run(req.user.id, key, APP_URL + '/preview/' + key, `${slug}-${key.slice(3, 8).toLowerCase()}.no-website`, name, niche, req.body.currency || 'USD', now(), now());
+  res.redirect(`/app/sites/${Number(r.lastInsertRowid)}?new=1`);
+});
+
 app.post('/app/sites/:id/plan', needUser, (req, res) => {
   const site = ownSite(req, res); if (!site) return;
   if (!isAdmin(req.user)) return res.redirect(`/app/sites/${site.id}`);

@@ -34,3 +34,30 @@ if (box && !box.querySelector('.status.on')) {
     }).catch(function () {});
   }, 5000);
 }
+
+// Upload a product photo (resized in the browser first so uploads stay small)
+document.querySelectorAll('form[data-photo-form]').forEach(function (f) {
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var status = f.querySelector('[data-photo-status]'), btn = f.querySelector('button');
+    var el = f.elements, file = el.photo.files[0];
+    if (!file) return;
+    btn.disabled = true; btn.textContent = 'Uploading…'; status.textContent = '';
+    var img = new Image();
+    img.onload = function () {
+      var s = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      var c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+      var ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      fetch('/app/sites/' + f.getAttribute('data-photo-form') + '/add-photo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: c.toDataURL('image/jpeg', 0.9), title: el.title.value, price: el.price.value, url: el.url.value, kind: el.kind.value }),
+      }).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || 'Upload failed'); }); })
+        .then(function () { location.href = location.pathname + '?added=1#products'; })
+        .catch(function (err) { status.textContent = err.message; btn.disabled = false; btn.textContent = 'Upload product'; });
+    };
+    img.onerror = function () { status.textContent = 'That file could not be opened — please use a JPG or PNG.'; btn.disabled = false; btn.textContent = 'Upload product'; };
+    img.src = URL.createObjectURL(file);
+  });
+});
