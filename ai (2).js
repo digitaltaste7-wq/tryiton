@@ -1,0 +1,240 @@
+// The AI step: shopper photo + product photo -> a polished photo of the shopper (or pet) wearing the product.
+// Uses Google Gemini image models, then a quick AI quality check; a bad result is regenerated once.
+import { safeFetch } from './net.js';
+
+const KEY = process.env.GEMINI_API_KEY || '';
+const BASE = process.env.GEMINI_BASE || 'https://generativelanguage.googleapis.com';
+// Model ladders, best first. A model that is unavailable (404) is skipped automatically.
+const LADDER = {
+  standard: (process.env.GEMINI_MODELS || 'gemini-3.1-flash-image-preview,gemini-2.5-flash-image').split(',').map((s) => s.trim()).filter(Boolean),
+  premium: (process.env.GEMINI_PREMIUM_MODELS || 'gemini-3-pro-image-preview,gemini-3.1-flash-image-preview,gemini-2.5-flash-image').split(',').map((s) => s.trim()).filter(Boolean),
+};
+const QC_MODEL = process.env.GEMINI_QC_MODEL || 'gemini-2.5-flash';
+const QC_ON = process.env.TRYON_QC !== '0';
+export const MOCK = !KEY || process.env.TRYON_MOCK === '1';
+const dead = new Set(); // models Google said do not exist for this key
+
+const sharp = null; // image re-compression disabled to keep the build simple
+
+const RATIOS = { '1:1': 1, '4:5': 0.8, '3:4': 0.75, '2:3': 0.667, '9:16': 0.5625, '5:4': 1.25, '4:3': 1.333, '3:2': 1.5, '16:9': 1.778 };
+export function nearestRatio(w, h) {
+  const r = w && h ? w / h : 0.8;
+  return Object.entries(RATIOS).sort((a, b) => Math.abs(a[1] - r) - Math.abs(b[1] - r))[0][0];
+}
+
+// Width/height straight from the file header (PNG, JPEG, WebP)
+export function imageSize(buf) {
+  try {
+    if (buf[0] === 0x89 && buf.toString('ascii', 1, 4) === 'PNG') return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+    if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
+      const t = buf.toString('ascii', 12, 16);
+      if (t === 'VP8X') return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+      if (t === 'VP8 ') return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+      if (t === 'VP8L') { const b = buf.readUInt32LE(21); return { w: (b & 0x3fff) + 1, h: ((b >> 14) & 0x3fff) + 1 }; }
+    }
+    if (buf[0] === 0xff && buf[1] === 0xd8) {
+      let i = 2;
+      while (i < buf.length) {
+        if (buf[i] !== 0xff) { i++; continue; }
+        const m = buf[i + 1];
+        if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7) };
+        i += 2 + buf.readUInt16BE(i + 2);
+      }
+    }
+  } catch {}
+  return null;
+}
+
+// ---------------- instructions to the AI ----------------
+const PLACE = {
+  necklace: 'around the neck, resting naturally on the collarbone and chest, with the chain following the neck and the pendant hanging by gravity',
+  earrings: 'on the earlobes (both ears where visible), hanging naturally',
+  ring: 'on a finger of a visible hand; if no hand is visible, raise one hand naturally to the chin or collarbone so the ring shows',
+  bracelet: 'on a visible wrist; if no wrist is visible, raise one hand naturally so the wrist shows',
+  watch: 'on a visible wrist; if no wrist is visible, raise one hand naturally so the wrist shows',
+};
+const GARMENT = {
+  top: 'Dress them in this top; keep plain, neutral bottoms that do not compete with it.',
+  bottom: 'Dress them in this bottom; keep a plain, neutral top that does not compete with it.',
+  dress: 'Dress them in this dress.',
+  outerwear: 'Dress them in this outerwear piece over a plain neutral outfit.',
+};
+const PET_FIT = {
+  harness: 'a harness: straps around the chest and behind the front legs, buckles closed, sitting snugly on the body',
+  collar: 'a collar: around the neck, sitting snugly',
+  leash: 'a collar and leash: collar around the neck, leash clipped on and hanging naturally',
+  apparel: 'a garment (coat/jacket/vest/suit): the neck opening around the neck, the body panel wrapped around the torso and following its curves, straps or belly band fastened under the chest, leg openings around the legs, correct size for this dog',
+};
+const RULES = 'Image 2 may show the product on a model, mannequin or another animal, or on its own; take ONLY the product from it and ignore whoever is wearing it. Reproduce the product exactly: design, colour, fabric/material, pattern, trims, reflective details, logos on the product, hardware and proportions. It must look physically worn — wrapping around the body in 3D with correct perspective, folds, contact shadows and occlusion — never a flat cut-out, sticker or floating overlay. Do not add text, watermarks, borders, extra items or extra limbs. Return only the photo.';
+
+export function buildPrompt({ category, sub, title, name, species }) {
+  if (category === 'pet') {
+    // The prompt that produced the original PetFit demo, word for word, plus which image is which
+    const animal = species === 'cat' ? 'cat' : 'dog';
+    return `Image 1 is the ${animal}${name ? ` (${name})` : ''}. Image 2 is the product "${title}" (${PET_FIT[sub] ? sub : 'apparel'}).
+Show this exact ${animal} wearing this exact product. Keep the ${animal}'s breed, fur color, markings and face identical. Keep the product's exact color, pattern and logo. Natural photo, clean light background, product clearly visible, product catalogue style, the ${animal}'s full body in frame.
+If image 2 shows the product on another animal, use only the product. The product must be properly worn and fitted, not pasted on.`;
+  }
+  if (category === 'jewellery') {
+    const place = PLACE[sub] || 'where this piece is naturally worn';
+    return `Edit image 1 so the person is wearing the jewellery from image 2 ("${title}", ${sub || 'jewellery'}).
+Place it ${place}. Remove any similar jewellery already worn in that spot.
+Keep the person exactly the same: face, identity, skin, hair, expression, clothing, background, lighting and framing. Keep the jewellery's real-life scale on the body, with true metal colour, stones and sparkle, and natural reflections and shadows on the skin.
+${RULES}`;
+  }
+  return `Create a professional e-commerce catalogue photo.
+Image 1 is a photo of a person. Image 2 is the product "${title}" (${sub || 'clothing'}).
+Show this exact same person — identical face, identity, skin tone, hair, body shape and proportions — wearing this item, fitted naturally to their body with realistic drape, folds and seams. ${GARMENT[sub] || ''}
+Photo style: standing, facing the camera in a relaxed pose, the whole garment visible, on a clean seamless studio backdrop in the same colour and soft lighting as the product photo (image 2); if image 2 has no backdrop, use light warm grey. Sharp focus. It should look like it belongs in the same catalogue as image 2.
+${RULES}`;
+}
+
+// ---------------- product image cache (1 hour) ----------------
+const imgCache = new Map();
+function sizedUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'cdn.shopify.com' || u.pathname.includes('/cdn/shop/')) u.searchParams.set('width', '1024');
+    return u.href;
+  } catch { return url; }
+}
+export async function loadProductImage(url) {
+  const hit = imgCache.get(url);
+  if (hit && hit.t > Date.now() - 3600e3) return hit;
+  const r = await safeFetch(sizedUrl(url), { headers: { Accept: 'image/jpeg,image/png,image/webp' } }, 12_000_000, true);
+  if (!r.ok) throw new Error('Product image unavailable');
+  let buf = r.buffer;
+  let mime = (r.contentType.split(';')[0] || '').trim();
+  if (!/^image\/(jpeg|png|webp)$/.test(mime)) {
+    mime = buf[0] === 0x89 ? 'image/png' : buf[0] === 0xff ? 'image/jpeg' : (buf.slice(8, 12).toString() === 'WEBP' ? 'image/webp' : '');
+    if (!mime && sharp) { buf = await sharp(buf).jpeg({ quality: 90 }).toBuffer(); mime = 'image/jpeg'; }
+    if (!mime) throw new Error('Unsupported product image format');
+  }
+  const v = { t: Date.now(), mime, data: buf.toString('base64'), size: imageSize(buf) };
+  imgCache.set(url, v);
+  if (imgCache.size > 300) imgCache.delete(imgCache.keys().next().value);
+  return v;
+}
+
+// ---------------- Google calls ----------------
+async function post(model, body, ms) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(`${BASE}/v1beta/models/${model}:generateContent`, {
+      method: 'POST', signal: ctrl.signal,
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': KEY },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(j.error?.message || 'AI error ' + r.status); e.status = r.status; throw e; }
+    return j;
+  } finally { clearTimeout(timer); }
+}
+
+async function callImage(model, prompt, person, product, ratio) {
+  const j = await post(model, {
+    contents: [{ role: 'user', parts: [
+      { text: prompt },
+      { inline_data: { mime_type: person.mime, data: person.data } },
+      { inline_data: { mime_type: product.mime, data: product.data } },
+    ] }],
+    generationConfig: { responseModalities: ['TEXT', 'IMAGE'], imageConfig: { aspectRatio: ratio } },
+  }, 120_000);
+  // Newer models can return draft "thought" images first; the final image is the last non-thought one.
+  const parts = (j.candidates?.[0]?.content?.parts || []).filter((p) => (p.inlineData || p.inline_data) && !p.thought);
+  const img = parts[parts.length - 1];
+  if (!img) {
+    const e = new Error('AI returned no image (' + (j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || 'unknown') + ')');
+    e.status = 422; throw e;
+  }
+  const d = img.inlineData || img.inline_data;
+  return { mime: d.mimeType || d.mime_type || 'image/png', data: d.data };
+}
+
+// Ask a fast text model to look at the result like a picky art director.
+async function qualityCheck({ product, result, category, sub }) {
+  if (!QC_ON) return { ok: true };
+  const subject = category === 'pet' ? 'the same animal' : 'the person';
+  const what = category === 'jewellery' ? `the ${sub || 'jewellery'}` : 'the product';
+  try {
+    const j = await post(QC_MODEL, {
+      contents: [{ role: 'user', parts: [
+        { text: `Image 1 is a product photo. Image 2 is an AI-generated photo that should show ${subject} wearing ${what} from image 1, realistically.
+Reply as JSON {"ok": boolean, "problem": string}. Set ok=false only for a clear failure: the product is missing or a different product; it looks pasted on, flat, floating or misaligned instead of worn; it is clearly the wrong size or position on the body; or the body/face/animal is distorted (extra or missing limbs, warped face). Minor colour or lighting differences are fine. "problem" is one short sentence (empty if ok).` },
+        { inline_data: { mime_type: product.mime, data: product.data } },
+        { inline_data: { mime_type: result.mime, data: result.data } },
+      ] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0 },
+    }, 30_000);
+    const text = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
+    const v = JSON.parse(text.replace(/^```json|```$/g, '').trim());
+    return { ok: v.ok !== false, problem: String(v.problem || '').slice(0, 200) };
+  } catch (e) {
+    console.error('[tryon] quality check skipped:', String(e.message).slice(0, 160));
+    return { ok: true };
+  }
+}
+
+async function generateWith(ladder, prompt, person, product, ratio) {
+  let last = null;
+  const models = ladder.filter((m) => !dead.has(m));
+  for (let mi = 0; mi < models.length; mi++) {
+    const model = models[mi];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return { ...(await callImage(model, prompt, person, product, ratio)), model };
+      } catch (e) {
+        last = e;
+        console.error(`[tryon] google said (${model}, try ${attempt + 1}):`, e.status || '', String(e.message).slice(0, 300));
+        if (e.status === 404 || (e.status === 400 && /model|not (found|supported)/i.test(e.message))) { dead.add(model); break; }
+        if (e.status === 429 && /limit:\s*0\b|free.?tier/i.test(e.message)) {
+          if (mi < models.length - 1) break; // this model has no quota on the key: try the next one
+          throw new Error('Google quota is 0 - billing is not active on this API key');
+        }
+        if (e.status === 422) { if (attempt >= 1) break; continue; } // no image: retry once, then next model
+        if ([429, 500, 502, 503, 504].includes(e.status) || e.name === 'AbortError') {
+          const hint = /retry in ([\d.]+)s/i.exec(e.message || '');
+          await new Promise((r) => setTimeout(r, (hint ? Math.min(30, Number(hint[1]) + 1) * 1000 : 2500 * 2 ** attempt) + Math.random() * 800));
+          continue;
+        }
+        if (e.status === 400 || e.status === 403) throw e; // bad key / bad request: no point retrying
+        break;
+      }
+    }
+  }
+  throw new Error('Could not create this look: ' + (last?.status || '') + ' ' + String(last?.message || '').slice(0, 160));
+}
+
+async function toJpegDataUrl(img) {
+  if (sharp) {
+    try {
+      const out = await sharp(Buffer.from(img.data, 'base64')).jpeg({ quality: 86, mozjpeg: true }).toBuffer();
+      return 'data:image/jpeg;base64,' + out.toString('base64');
+    } catch {}
+  }
+  return `data:${img.mime};base64,${img.data}`;
+}
+
+// Main entry: returns a data URL of the finished look
+export async function tryOn({ person, personSize, product, category, sub, title, name, species, quality }) {
+  // Catalogue-style looks (pets, clothing) match the store's own product photo shape; jewellery keeps the shopper's photo shape.
+  const shape = category === 'jewellery' ? personSize : (product.size || personSize);
+  const ratio = nearestRatio(shape?.w, shape?.h);
+  if (MOCK) {
+    await new Promise((r) => setTimeout(r, 1500 + Math.random() * 2500));
+    return `data:${person.mime};base64,${person.data}`;
+  }
+  const prompt = buildPrompt({ category, sub, title, name, species });
+  const ladder = LADDER[quality === 'premium' ? 'premium' : 'standard'];
+  let img = await generateWith(ladder, prompt, person, product, ratio);
+  const qc = await qualityCheck({ product, result: img, category, sub });
+  if (!qc.ok) {
+    console.error(`[tryon] quality check failed (${img.model}) "${title}": ${qc.problem} — regenerating`);
+    try {
+      const fix = `${prompt}\nIMPORTANT — a previous attempt had this problem, avoid it: ${qc.problem}`;
+      img = await generateWith(LADDER.premium, fix, person, product, ratio);
+    } catch (e) { console.error('[tryon] regenerate failed, keeping first result:', String(e.message).slice(0, 160)); }
+  }
+  return toJpegDataUrl(img);
+}
