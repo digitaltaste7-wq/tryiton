@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { db, now, getUsage, imageAllowance } from './db.js';
 import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './auth.js';
 import { normalizeUrl, importCatalog } from './catalog.js';
-import { createJob, getJob, allowIp } from './jobs.js';
+import { createJob, getJob, allowIp, retryItem } from './jobs.js';
 import { MOCK } from './ai.js';
 import { layout, landing, authPage, sitesPage, sitePage, previewPage, SUBS } from './views.js';
 
@@ -25,7 +25,7 @@ app.get('/w.js', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.resolve('widget.js'));
 });
-app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK }));
+app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'studio-v3' }));
 
 // =================== Widget API (called from shops' websites) ===================
 const widget = express.Router();
@@ -80,7 +80,7 @@ widget.post('/:key/start', (req, res) => {
   const site = siteByKey(req.params.key);
   if (!site || !site.enabled) return res.status(404).json({ error: 'TryOn is switched off for this store.' });
   if (!originAllowed(site, req)) return res.status(403).json({ error: 'Not allowed from this website.' });
-  if (!allowIp(req.ip)) return res.status(429).json({ error: 'You have made several lookbooks just now — please try again in a few minutes.' });
+  if (!allowIp(req.ip, 6)) return res.status(429).json({ error: 'You have made several lookbooks just now — please try again in a few minutes.' });
   const { photo, w, h, name, species } = req.body || {};
   const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(photo || ''));
   if (!m) return res.status(400).json({ error: 'Please upload a JPG or PNG photo.' });
@@ -93,7 +93,7 @@ widget.post('/:key/start', (req, res) => {
   if (left <= 0) return res.status(402).json({ error: 'TryOn is resting for now — please check back soon.' });
   chosen = chosen.slice(0, left);
   const job = createJob({
-    site, person: { mime: m[1], data: m[2] }, ratioWH: [Number(w) || 0, Number(h) || 0], products: chosen,
+    site, person: { mime: m[1], data: m[2] }, personSize: { w: Number(w) || 0, h: Number(h) || 0 }, products: chosen,
     name: String(name || '').slice(0, 40).replace(/[^\p{L}\p{N} '\-]/gu, ''),
     species: species === 'cat' ? 'cat' : species === 'dog' ? 'dog' : null,
   });
@@ -113,7 +113,16 @@ widget.get('/:key/job/:id', (req, res) => {
     items[pid] = { status: it.status };
     if (it.status === 'done' && !have.has(pid)) items[pid].image = it.image;
   }
-  res.json({ total: job.items.size, done, failed, finished: !!job.finished, items });
+  res.json({ total: job.items.size, done, failed, finished: !!job.finished, items, base: req.query.hb ? undefined : job.base });
+});
+widget.post('/:key/job/:id/retry/:pid', (req, res) => {
+  const site = siteByKey(req.params.key);
+  const job = getJob(req.params.id);
+  if (!site || !job || job.siteId !== site.id) return res.status(404).json({ error: 'Lookbook expired — please start again.' });
+  if (imageAllowance(site) - getUsage(site.id).images <= 0) return res.status(402).json({ error: 'TryOn is resting for now — please check back soon.' });
+  const r = retryItem(job, site, req.params.pid);
+  if (r === 'expired') return res.status(410).json({ error: 'Your photo has been deleted for privacy — start a new lookbook to try again.' });
+  res.json({ ok: !!r });
 });
 app.use('/api/w', widget);
 
@@ -261,8 +270,9 @@ app.post('/app/sites/:id/reimport', needUser, async (req, res) => {
 app.post('/app/sites/:id/plan', needUser, (req, res) => {
   const site = ownSite(req, res); if (!site) return;
   if (!isAdmin(req.user)) return res.redirect(`/app/sites/${site.id}`);
-  db.prepare('UPDATE sites SET plan = ?, monthly_limit = ? WHERE id = ?')
-    .run(req.body.plan === 'active' ? 'active' : 'trial', Math.max(0, Number(req.body.monthly_limit) || 0), site.id);
+  db.prepare('UPDATE sites SET plan = ?, monthly_limit = ?, quality = ? WHERE id = ?')
+    .run(req.body.plan === 'active' ? 'active' : 'trial', Math.max(0, Number(req.body.monthly_limit) || 0),
+      req.body.quality === 'premium' ? 'premium' : 'standard', site.id);
   res.redirect(`/app/sites/${site.id}?saved=1`);
 });
 app.post('/app/sites/:id/delete', needUser, (req, res) => {

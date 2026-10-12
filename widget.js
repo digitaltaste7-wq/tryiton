@@ -10,7 +10,8 @@
   var PREVIEW = script.getAttribute('data-preview') === '1';
   var API = new URL(script.src).origin + '/api/w/' + encodeURIComponent(SITE);
   var cfg = null, state = null, shadow = null, root = null, els = {};
-  var pollTimer = null;
+  var pollTimer = null, pollErrors = 0;
+  var LOOK_VERSION = 2; // bump to discard looks saved by an older version
 
   // ---------------- small helpers ----------------
   function h(tag, attrs, kids) {
@@ -61,7 +62,7 @@
   }
   function save() {
     if (!state) return;
-    var copy = { name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, failed: state.failed, at: state.at, finished: state.finished };
+    var copy = { v: LOOK_VERSION, name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, failed: state.failed, at: state.at, finished: state.finished };
     idb().then(function (d) { d.transaction(STORE, 'readwrite').objectStore(STORE).put(copy, SITE); }).catch(function () {});
   }
   function load() {
@@ -281,19 +282,35 @@
     clearTimeout(pollTimer);
     if (!state || state.finished) return;
     var have = Object.keys(state.looks).join(',');
-    api('/job/' + state.job + '?have=' + encodeURIComponent(have)).then(function (r) {
+    api('/job/' + state.job + '?have=' + encodeURIComponent(have) + (state.base ? '&hb=1' : '')).then(function (r) {
+      if (r.base && !state.base) state.base = r.base;
       Object.keys(r.items).forEach(function (id) {
         var it = r.items[id];
         if (it.image) state.looks[id] = it.image;
-        if (it.status === 'failed') state.failed[id] = true;
+        if (it.status === 'failed') state.failed[id] = true; else delete state.failed[id];
       });
+      pollErrors = 0;
       state.finished = r.finished;
       save(); render(); swapPage();
       if (!r.finished) pollTimer = setTimeout(poll, 1200);
     }).catch(function () {
-      // job expired or network blip: keep what we have
-      pollTimer = setTimeout(function () { if (state && !state.finished) poll(); }, 4000);
+      // network blip: try again; lookbook gone (e.g. server restarted): keep what we have, mark the rest
+      if (++pollErrors >= 5) {
+        state.ids.forEach(function (id) { if (!state.looks[id]) state.failed[id] = true; });
+        state.finished = true; state.expired = true; save(); render(); return;
+      }
+      pollTimer = setTimeout(function () { if (state && !state.finished) poll(); }, 3000);
     });
+  }
+  function retry(id) {
+    if (state.expired) { reset(); showStep1(); return; }
+    delete state.failed[id]; state.finished = false; render();
+    api('/job/' + state.job + '/retry/' + encodeURIComponent(id), { method: 'POST' }).then(function () { poll(); })
+      .catch(function (e) { state.failed[id] = true; state.finished = true; render(); alert(e.message); });
+  }
+  function retryAll() {
+    if (state.expired) { reset(); showStep1(); return; }
+    Object.keys(state.failed).forEach(function (id) { retry(id); });
   }
 
   function counts() {
@@ -309,7 +326,7 @@
     els.pimg = h('div', { class: 'pimg' });
     els.ptext = h('p', { class: 'ptext' });
     els.pbar = h('div', { class: 'pbar' }, [h('i')]);
-    els.pbtn = h('button', { class: 'primary', type: 'button', text: 'Browse the lookbook', disabled: true, onclick: function () { showBook(); } });
+    els.pbtn = h('button', { class: 'primary', type: 'button', text: 'Browse the lookbook', disabled: true }); // click set in updateProgress
     frame([els.pimg, els.ptext, els.pbar, els.pbtn]);
     updateProgress();
   }
@@ -320,20 +337,23 @@
     var next = state.ids.filter(function (id) { return !state.looks[id] && !state.failed[id]; })[0];
     var show = lastDone || next || state.ids[0];
     var p = product(show);
-    var src = state.looks[show] || (p && p.image);
+    var src = state.looks[show] || state.base || (p && p.image);
+    var tag = String(show) + (state.looks[show] ? 'L' : state.base ? 'B' : 'P');
     var cur = els.pimg.querySelector('img');
-    if (!cur || cur.getAttribute('data-id') !== String(show) + (state.looks[show] ? 'L' : 'P')) {
-      var img = h('img', { src: src, alt: p ? p.title : '', 'data-id': String(show) + (state.looks[show] ? 'L' : 'P') });
+    if (!cur || cur.getAttribute('data-id') !== tag) {
+      var img = h('img', { src: src, alt: p ? p.title : '', 'data-id': tag });
       img.style.opacity = '0';
       els.pimg.appendChild(img);
       requestAnimationFrame(function () { img.style.opacity = '1'; });
       setTimeout(function () { while (els.pimg.children.length > 1) els.pimg.removeChild(els.pimg.firstChild); }, 600);
     }
     els.ptext.textContent = c.done + c.fail >= c.total
-      ? (c.done ? copy().ready(state.name) + ' is ready' : 'Sorry — we could not create the looks this time.')
+      ? (c.done ? copy().ready(state.name) + ' is ready' : 'That didn’t work this time — tap Try again.')
       : 'Getting ' + state.name + ' ready… ' + c.done + ' of ' + c.total + ' looks done';
     els.pbar.firstChild.style.width = Math.max(6, ((c.done + c.fail) / c.total) * 100) + '%';
-    els.pbtn.disabled = !c.done;
+    els.pbtn.disabled = !c.done && !c.fail;
+    if (!c.done && c.fail && c.done + c.fail >= c.total) { els.pbtn.textContent = 'Try again'; els.pbtn.onclick = retryAll; }
+    else { els.pbtn.textContent = 'Browse the lookbook'; els.pbtn.onclick = function () { showBook(); }; }
   }
 
   // ---------------- lookbook ----------------
@@ -361,8 +381,9 @@
     state.ids.forEach(function (id) {
       var p = product(id); if (!p) return;
       var look = state.looks[id], fail = state.failed[id];
-      var card = h('button', { type: 'button', class: 'card' + (look ? '' : ' wait'), disabled: !look || null, onclick: function () { showDetail(id); } }, [
-        h('div', { class: 'ph' }, [h('img', { src: look || p.image, alt: p.title, loading: 'lazy' }), !look ? h('span', { class: 'st', text: fail ? 'Not available' : 'Creating…' }) : null]),
+      var card = h('button', { type: 'button', class: 'card' + (look ? '' : fail ? ' fail' : ' wait'), disabled: (!look && !fail) || null,
+        onclick: function () { if (look) showDetail(id); else if (fail) retry(id); } }, [
+        h('div', { class: 'ph' }, [h('img', { src: look || p.image, alt: p.title, loading: 'lazy' }), !look ? h('span', { class: 'st', text: fail ? '↻ Try again' : 'Creating…' }) : null]),
         h('span', { class: 't', text: p.title }), h('span', { class: 'pr', text: money(p.price) }),
       ]);
       els.grid.appendChild(card);
@@ -472,7 +493,7 @@
       document.head.appendChild(page);
       mount();
       return load().then(function (saved) {
-        if (saved && saved.job && Date.now() - saved.at < 24 * 3600e3) {
+        if (saved && saved.v === LOOK_VERSION && saved.job && Date.now() - saved.at < 24 * 3600e3) {
           state = saved;
           state.ids = state.ids.filter(function (id) { return product(id); });
           if (state.ids.length) { updateChip(); swapPage(); if (!state.finished) poll(); }
@@ -534,7 +555,7 @@
     '.drop img{width:100%;max-height:300px;object-fit:cover;display:block}',
     '.drop .change{position:absolute;bottom:10px;right:10px;background:rgba(255,255,255,.92);color:var(--ink);font-size:12px;font-weight:600;border-radius:999px;padding:6px 10px}',
     '.pimg{position:relative;aspect-ratio:4/5;border-radius:12px;overflow:hidden;background:var(--cream);margin-top:6px}',
-    '.pimg img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transition:opacity .6s}',
+    '.pimg img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transition:opacity .6s}',
     '.ptext{font-family:"Cormorant Garamond",Georgia,serif;font-size:19px;text-align:center;margin:16px 0 10px}',
     '.pbar{height:4px;background:var(--line);border-radius:4px;overflow:hidden}',
     '.pbar i{display:block;height:100%;background:var(--gold);transition:width .6s;width:6%}',
@@ -543,7 +564,8 @@
     '.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}',
     '.card{border:0;background:none;padding:0;text-align:left;display:flex;flex-direction:column;gap:4px;color:inherit}',
     '.card .ph{position:relative;aspect-ratio:4/5;border-radius:12px;overflow:hidden;background:var(--cream)}',
-    '.card img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .4s}',
+    '.card img{width:100%;height:100%;object-fit:contain;display:block;transition:transform .4s}',
+    '.card.fail img{opacity:.35}','.card.fail .st{background:var(--ink);color:#fff}',
     '.card:not(.wait):hover img{transform:scale(1.03)}',
     '.card.wait img{opacity:.45;filter:grayscale(.3)}',
     '.card .st{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,.95);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;white-space:nowrap}',
@@ -555,7 +577,7 @@
     '.foot .link{margin:0}.foot .pw{margin:0}',
     '.detail{display:grid;grid-template-columns:1.1fr 1fr;gap:28px;align-items:start}',
     '.big{position:relative;border-radius:14px;overflow:hidden;background:var(--cream)}',
-    '.big img{width:100%;display:block;max-height:72vh;object-fit:cover}',
+    '.big img{width:100%;display:block;max-height:72vh;object-fit:contain}',
     '.tog{position:absolute;left:12px;bottom:12px;border:0;background:rgba(255,255,255,.95);border-radius:999px;padding:8px 13px;font-weight:600;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,.15)}',
     '.info{padding-top:8px}.info h2{margin-top:8px}',
     '.back{margin:0;padding:0}',

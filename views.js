@@ -150,12 +150,13 @@ ${flash ? `<p class="flash">${esc(flash)}</p>` : ''}
 </section>
 <section class="card">
   <h2>This month</h2>
-  <div class="stats"><div><b>${usage.images}</b><span>try-on images</span></div><div><b>${usage.sessions}</b><span>shoppers used it</span></div><div><b>${usage.failed}</b><span>failed</span></div></div>
+  <div class="stats"><div><b>${usage.images}</b><span>try-on images</span></div><div><b>${usage.sessions}</b><span>shoppers used it</span></div><div><b>${usage.failed}</b><span>not created</span></div></div>
   <div class="bar"><i style="width:${pct}%"></i></div>
   <p class="muted small">${usage.images} of ${allowance} images used${site.plan !== 'active' ? ' (free trial allowance)' : ''}.</p>
   ${admin ? `<form method="post" action="/app/sites/${site.id}/plan" class="form adm"><p class="step">Admin</p>
     <div class="row gap"><label class="grow">Plan<select name="plan"><option value="trial"${site.plan !== 'active' ? ' selected' : ''}>Trial</option><option value="active"${site.plan === 'active' ? ' selected' : ''}>Active (paid)</option></select></label>
-    <label class="grow">Monthly images<input type="number" name="monthly_limit" value="${site.monthly_limit}" min="0"></label></div><button class="btn sm">Update plan</button></form>` : ''}
+    <label class="grow">Monthly images<input type="number" name="monthly_limit" value="${site.monthly_limit}" min="0"></label></div>
+    <label>AI quality<select name="quality"><option value="standard"${site.quality !== 'premium' ? ' selected' : ''}>Standard — Nano Banana 2 (about $0.07 per look)</option><option value="premium"${site.quality === 'premium' ? ' selected' : ''}>Premium — Nano Banana Pro (about $0.14 per look)</option></select></label><button class="btn sm">Update plan</button></form>` : ''}
   <form method="post" action="/app/sites/${site.id}/reimport" data-busy="Refreshing products…"><button class="btn ghost sm">Refresh products from website</button></form>
 </section>
 </div>
