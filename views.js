@@ -186,6 +186,7 @@ ${manual ? `<section class="card">
       <label>Product name<input name="title" required placeholder="e.g. Linen Wrap Dress"></label>
       <div class="row gap"><label class="grow">Price<input name="price" inputmode="decimal" placeholder="e.g. 89"></label>
       <label class="grow">Type<select name="kind">${Object.entries(SUBS).map(([c, subs]) => `<optgroup label="${NICHE[c]}">` + subs.map((x) => `<option value="${c}:${x}"${c === site.niche && x === SUBS[c][0] ? ' selected' : ''}>${NICHE[c]} · ${cap(x)}</option>`).join('') + '</optgroup>').join('')}</select></label></div>
+      ${site.niche === 'clothing' ? `<label>For<select name="gender"><option value="">Anyone</option><option value="women">Women</option><option value="men">Men</option><option value="unisex">Unisex</option></select></label>` : '<input type="hidden" name="gender" value="">'}
       <label>Link to buy it <span class="muted">(optional — Instagram post, WhatsApp, shop page)</span><input name="url" placeholder="https://"></label>
       <button class="btn">Upload product</button>
       <p class="muted small" data-photo-status></p>
@@ -198,6 +199,7 @@ ${manual ? `<section class="card">
   <form method="post" action="/app/sites/${site.id}/products">
   <div class="plist">
   ${products.map((p) => `<div class="prow"><img src="${esc(p.image)}" alt="" loading="lazy"><div class="grow"><b>${esc(p.title)}</b><span class="muted small">${p.price ? esc(p.price) + ' ' + esc(site.currency || '') : ''}</span></div>
+    ${p.category === 'clothing' ? `<select name="g_${p.id}" aria-label="Who it is for" class="gsel"><option value=""${!p.gender ? ' selected' : ''}>Anyone</option><option value="women"${p.gender === 'women' ? ' selected' : ''}>Women</option><option value="men"${p.gender === 'men' ? ' selected' : ''}>Men</option><option value="unisex"${p.gender === 'unisex' ? ' selected' : ''}>Unisex</option></select>` : ''}
     <select name="p_${p.id}" aria-label="Type for ${esc(p.title)}">${opt(p)}</select></div>`).join('')}
   </div>
   <div class="savebar"><button class="btn">Save products</button></div>

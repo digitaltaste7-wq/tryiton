@@ -52,7 +52,7 @@ document.querySelectorAll('form[data-photo-form]').forEach(function (f) {
       ctx.drawImage(img, 0, 0, c.width, c.height);
       fetch('/app/sites/' + f.getAttribute('data-photo-form') + '/add-photo', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: c.toDataURL('image/jpeg', 0.9), title: el.title.value, price: el.price.value, url: el.url.value, kind: el.kind.value }),
+        body: JSON.stringify({ image: c.toDataURL('image/jpeg', 0.9), title: el.title.value, price: el.price.value, url: el.url.value, kind: el.kind.value, gender: el.gender ? el.gender.value : '' }),
       }).then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || 'Upload failed'); }); })
         .then(function () { location.href = location.pathname + '?added=1#products'; })
         .catch(function (err) { status.textContent = err.message; btn.disabled = false; btn.textContent = 'Upload product'; });

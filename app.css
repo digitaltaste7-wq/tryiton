@@ -80,3 +80,5 @@ input:focus,select:focus{outline:2px solid var(--gold2);outline-offset:1px}
 .nosite select,.addgrid select{border:1px solid #d7cfc3;border-radius:10px;padding:11px 12px;font:15px Inter,sans-serif;background:#fff}
 .form textarea{display:block;width:100%;margin-top:6px;border:1px solid #d7cfc3;border-radius:10px;padding:11px 13px;font:14px/1.5 Inter,sans-serif;resize:vertical}
 .addgrid{margin-top:8px}.addgrid>form{background:var(--bg);border-radius:14px;padding:18px}
+
+.prow .gsel{max-width:24%}

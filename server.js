@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, now, getUsage, imageAllowance } from './db.js';
 import { hashPass, checkPass, startSession, endSession, currentUser, isAdmin } from './auth.js';
-import { normalizeUrl, importCatalog, importFromUrls, classify } from './catalog.js';
+import { normalizeUrl, importCatalog, importFromUrls, classify, genderOf } from './catalog.js';
 import fs from 'node:fs';
 import { createJob, getJob, allowIp, retryItem } from './jobs.js';
 import { MOCK } from './ai.js';
@@ -26,7 +26,7 @@ app.get('/w.js', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.resolve('widget.js'));
 });
-app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v4-any-website' }));
+app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v5-men-women' }));
 
 // =================== Widget API (called from shops' websites) ===================
 const widget = express.Router();
@@ -55,7 +55,7 @@ function originAllowed(site, req) {
   return false;
 }
 function widgetProducts(siteId) {
-  return db.prepare(`SELECT id, title, url, image, price, variant_id, category, sub FROM products
+  return db.prepare(`SELECT id, title, url, image, price, variant_id, category, sub, gender FROM products
     WHERE site_id = ? AND include = 1 AND category IS NOT NULL ORDER BY position LIMIT 200`).all(siteId);
 }
 
@@ -197,14 +197,14 @@ function prettyName(domain) {
   return domain.split('.')[0].replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 function saveProducts(siteId, products, niche, startPos = 0) {
-  const ins = db.prepare(`INSERT INTO products (site_id, ext_id, title, url, image, price, variant_id, category, sub, include, position)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const ins = db.prepare(`INSERT INTO products (site_id, ext_id, title, url, image, price, variant_id, category, sub, include, position, gender)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   db.exec('BEGIN');
   try {
     products.forEach((p, i) => {
       // Within a store of one niche, pieces we could not classify get switched off (merchant can turn on)
       const on = p.category && (p.category === niche || niche === 'clothing' || p.category !== 'clothing') ? 1 : 0;
-      ins.run(siteId, p.ext_id, p.title, p.url, p.image, p.price == null ? null : String(p.price), p.variant_id, p.category, p.sub, p.include ?? on, startPos + i);
+      ins.run(siteId, p.ext_id, p.title, p.url, p.image, p.price == null ? null : String(p.price), p.variant_id, p.category, p.sub, p.include ?? on, startPos + i, p.gender || null);
     });
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -247,6 +247,7 @@ app.post('/app/sites/:id/products', needUser, (req, res) => {
   const upd = db.prepare('UPDATE products SET include = ?, category = COALESCE(?, category), sub = COALESCE(?, sub) WHERE id = ? AND site_id = ?');
   db.exec('BEGIN');
   for (const [k, v] of Object.entries(req.body)) {
+    if (k.startsWith('g_')) { db.prepare('UPDATE products SET gender = ? WHERE id = ? AND site_id = ?').run(['women', 'men', 'unisex'].includes(v) ? v : null, Number(k.slice(2)), site.id); continue; }
     if (!k.startsWith('p_')) continue;
     const id = Number(k.slice(2));
     if (v === 'off') { upd.run(0, null, null, id, site.id); continue; }
@@ -263,9 +264,9 @@ app.post('/app/sites/:id/reimport', needUser, async (req, res) => {
     const cat = await importCatalog(site.url);
     if (!cat.products.length) return res.redirect(`/app/sites/${site.id}?error=` + encodeURIComponent('No products could be read automatically — your current products are unchanged.'));
     // keep the merchant's choices for products we already knew
-    const old = new Map(db.prepare('SELECT ext_id, title, include, category, sub FROM products WHERE site_id = ?').all(site.id).map((p) => [p.ext_id || p.title, p]));
+    const old = new Map(db.prepare('SELECT ext_id, title, include, category, sub, gender FROM products WHERE site_id = ?').all(site.id).map((p) => [p.ext_id || p.title, p]));
     db.prepare("DELETE FROM products WHERE site_id = ? AND (ext_id IS NULL OR ext_id NOT LIKE 'added:%')").run(site.id);
-    saveProducts(site.id, cat.products.map((p) => { const o = old.get(p.ext_id || p.title); return o ? { ...p, category: o.category, sub: o.sub } : p; }), site.niche);
+    saveProducts(site.id, cat.products.map((p) => { const o = old.get(p.ext_id || p.title); return o ? { ...p, category: o.category, sub: o.sub, gender: o.gender ?? p.gender } : p; }), site.niche);
     for (const [k, o] of old) if (!o.include) db.prepare('UPDATE products SET include = 0 WHERE site_id = ? AND (ext_id = ? OR title = ?)').run(site.id, k, k);
     db.prepare('UPDATE sites SET imported_at = ? WHERE id = ?').run(now(), site.id);
     res.redirect(`/app/sites/${site.id}?saved=1`);
@@ -294,7 +295,7 @@ app.post('/app/sites/:id/add-links', needUser, async (req, res) => {
 
 app.post('/app/sites/:id/add-photo', needUser, express.json({ limit: '15mb' }), (req, res) => {
   const site = ownSite(req, res); if (!site) return;
-  const { title, price, url, image, kind } = req.body || {};
+  const { title, price, url, image, kind, gender } = req.body || {};
   const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(image || ''));
   if (!m || !String(title || '').trim()) return res.status(400).json({ error: 'Add a product name and a photo.' });
   const file = crypto.randomBytes(10).toString('hex') + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
@@ -307,6 +308,7 @@ app.post('/app/sites/:id/add-photo', needUser, express.json({ limit: '15mb' }), 
   saveProducts(site.id, [{
     ext_id: 'added:' + file, title: p.title, url: /^https?:\/\//.test(url || '') ? String(url).slice(0, 500) : null,
     image: `${APP_URL}/media/${file}`, price: String(price || '').replace(/[^0-9.]/g, '') || null, variant_id: null, category, sub, include: 1,
+    gender: ['women', 'men', 'unisex'].includes(gender) ? gender : (category === 'clothing' ? genderOf(p, sub) : null),
   }], site.niche, nextPos(site.id));
   res.json({ ok: true });
 });

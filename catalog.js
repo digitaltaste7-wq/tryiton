@@ -31,7 +31,26 @@ const CLOTH = {
 };
 const SKIP = /\b(gift card|giftcard|e-gift|shipping|insurance|warranty|sample|cleaner|polish cloth|box only|treat|treats|food|kibble|shampoo|bowl|toy|toys|bed|crate|candle|mug|sock|socks|hat|cap|beanie|bag|tote|backpack|belt|wallet|sunglasses|towel|blanket|boxer|boxers|brief|briefs|underwear|bra|swatch|repair|kit)\b/i;
 
+const MEN = /\b(men|mens|men's|man|male|guys?|gents?|menswear|him)\b/i;
+const WOMEN = /\b(women|womens|women's|woman|ladies|lady|female|womenswear|her|girls?)\b/i;
+const UNISEX = /\b(unisex|gender[- ]?neutral|all[- ]gender)\b/i;
+// Who a clothing piece is for, from its name, type, tags and web address
+export function genderOf(p, sub) {
+  let path = ''; try { path = new URL(p.url).pathname.replace(/[-_/]+/g, ' '); } catch {}
+  const text = [p.title, p.type, (p.tags || []).join(' '), path].join(' ').replace(/[-_:]+/g, ' ');
+  if (UNISEX.test(text)) return 'unisex';
+  const m = MEN.test(text), w = WOMEN.test(text);
+  if (m && !w) return 'men';
+  if (w && !m) return 'women';
+  if (sub === 'dress' || /\b(skirt|blouse|bodysuit|bra|camisole|cami|gown|maxi|midi)\b/i.test(text)) return 'women';
+  return m && w ? 'unisex' : null;
+}
+
 export function classify(p) {
+  const r = classifyCore(p);
+  return r.category === 'clothing' ? { ...r, gender: genderOf(p, r.sub) } : { ...r, gender: null };
+}
+function classifyCore(p) {
   const text = [p.title, p.type, (p.tags || []).join(' ')].join(' ');
   if (SKIP.test(text)) return { category: null, sub: null };
   const isCloth = Object.values(CLOTH).some((r) => r.test(text));
@@ -258,7 +277,7 @@ function finish(res) {
   // In a clothing store, a piece we could not name (e.g. "The Organic Cotton Crew") is most likely a top
   if (res.niche === 'clothing') {
     for (const p of res.products) {
-      if (!p.category && !SKIP.test([p.title, p.type, (p.tags || []).join(' ')].join(' '))) { p.category = 'clothing'; p.sub = 'top'; }
+      if (!p.category && !SKIP.test([p.title, p.type, (p.tags || []).join(' ')].join(' '))) { p.category = 'clothing'; p.sub = 'top'; p.gender = genderOf(p, 'top'); }
     }
   }
   return res;

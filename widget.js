@@ -107,8 +107,11 @@
 
   function pickProducts(kind) {
     var allow = FITS[kind] || null;
-    var list = cfg.products.filter(function (p) { return !allow || allow.indexOf(p.sub) >= 0; });
-    if (!list.length) list = cfg.products.slice();
+    var g = bothGenders() ? draft.gender : null;
+    var pool = cfg.products.filter(function (p) { return !g || !p.gender || p.gender === g || p.gender === 'unisex'; });
+    if (!pool.length) pool = cfg.products.slice();
+    var list = pool.filter(function (p) { return !allow || allow.indexOf(p.sub) >= 0; });
+    if (!list.length) list = pool.slice();
     var here = location.pathname.replace(/\/$/, '');
     list.sort(function (a, b) {
       var ah = a.url && here && new URL(a.url, location.href).pathname.replace(/\/$/, '') === here ? -1 : 0;
@@ -174,7 +177,7 @@
   }
 
   // ---------------- step 1: name + photo type ----------------
-  var draft = { name: '', kind: null, consent: false, file: null };
+  var draft = { name: '', kind: null, consent: false, file: null, gender: null };
   function showStep1() {
     var c = copy();
     if (!draft.kind) draft.kind = c.kinds[0][0];
@@ -184,11 +187,19 @@
         draft.kind = k[0]; [].forEach.call(chips.children, function (b) { b.className = ''; }); e.currentTarget.className = 'on';
       } });
     }));
+    // Clothing stores that sell both: ask who they're shopping for first
+    var both = bothGenders(), gchips = null;
+    if (both) gchips = h('div', { class: 'seg big' }, [['women', 'Women'], ['men', 'Men']].map(function (g) {
+      return h('button', { type: 'button', class: draft.gender === g[0] ? 'on' : '', text: g[1], onclick: function (e) {
+        draft.gender = g[0]; [].forEach.call(gchips.children, function (b) { b.className = ''; }); e.currentTarget.className = 'on'; err.hidden = true;
+      } });
+    }));
     var box = h('input', { type: 'checkbox', checked: draft.consent || null });
     var err = h('p', { class: 'err', hidden: true });
     var go = h('button', { class: 'primary', type: 'button', text: 'Continue', onclick: function () {
       draft.name = name.value.trim().replace(/[<>]/g, '');
       draft.consent = box.checked;
+      if (both && !draft.gender) { err.textContent = 'Please choose Women or Men.'; err.hidden = false; return; }
       if (!draft.name) { err.textContent = 'Please add a name.'; err.hidden = false; name.focus(); return; }
       if (!draft.consent) { err.textContent = 'Please tick the box to continue.'; err.hidden = false; return; }
       showStep2();
@@ -197,13 +208,20 @@
     frame([
       h('p', { class: 'eyebrow', text: 'Step 1 of 2' }),
       h('h2', { text: c.step1 }),
+      both ? h('label', { class: 'lbl', text: 'Shopping for' }) : null, gchips,
       h('label', { class: 'lbl', text: c.nameLabel }), name,
       h('label', { class: 'lbl', text: c.q }), chips,
       h('label', { class: 'consent' }, [box, h('span', { text: c.consent })]),
       err, go,
       h('p', { class: 'pw' }, ['Powered by ', h('b', { text: 'TryOn' })]),
     ]);
-    setTimeout(function () { name.focus(); }, 30);
+    if (!both) setTimeout(function () { name.focus(); }, 30);
+  }
+  function bothGenders() {
+    if (cfg.niche !== 'clothing') return false;
+    var w = 0, m = 0;
+    cfg.products.forEach(function (p) { if (p.gender === 'women') w++; else if (p.gender === 'men') m++; });
+    return w > 0 && m > 0;
   }
 
   // ---------------- step 2: photo ----------------
@@ -536,6 +554,7 @@
     '.seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:8px}',
     '.seg button{border:1px solid #d9d2c7;background:#fff;border-radius:10px;padding:10px 6px;font-size:14px}',
     '.seg button.on{background:var(--ink);color:#fff;border-color:var(--ink)}',
+    '.seg.big button{padding:13px 6px;font-size:15px;font-weight:600}',
     '.consent{display:flex;gap:10px;align-items:flex-start;font-size:12.5px;color:var(--muted);margin:16px 0 4px}',
     '.consent input{margin-top:3px;accent-color:var(--ink)}',
     '.primary,.secondary{display:block;width:100%;text-align:center;border-radius:12px;padding:14px;font-weight:600;margin-top:14px;text-decoration:none;font-size:15px}',

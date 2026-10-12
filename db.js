@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS usage (
 `);
 
 // Columns added after launch (safe to run on an existing database)
-for (const sql of [`ALTER TABLE sites ADD COLUMN quality TEXT DEFAULT 'standard'`]) {
+for (const sql of [`ALTER TABLE sites ADD COLUMN quality TEXT DEFAULT 'standard'`, `ALTER TABLE products ADD COLUMN gender TEXT`]) {
   try { db.exec(sql); } catch { /* already there */ }
 }
 
