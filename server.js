@@ -26,7 +26,7 @@ app.get('/w.js', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.sendFile(path.resolve('widget.js'));
 });
-app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v12-vertex-bridge' }));
+app.get('/health', (req, res) => res.json({ ok: true, mock: MOCK, version: 'v15-real-angles' }));
 
 // =================== Widget API (called from shops' websites) ===================
 const widget = express.Router();
@@ -108,6 +108,7 @@ widget.get('/:key/job/:id', (req, res) => {
   const job = getJob(req.params.id);
   if (!site || !job || job.siteId !== site.id) return res.status(404).json({ error: 'Lookbook expired — please start again.' });
   const have = new Set(String(req.query.have || '').split(',').filter(Boolean));
+  const haveAngles = new Set(String(req.query.ha || '').split(',').filter(Boolean));
   const items = {};
   let done = 0, failed = 0;
   for (const [pid, it] of job.items) {
@@ -115,6 +116,8 @@ widget.get('/:key/job/:id', (req, res) => {
     if (it.status === 'failed') failed++;
     items[pid] = { status: it.status };
     if (it.status === 'done' && !have.has(pid)) items[pid].image = it.image;
+    if (it.anglesPending) items[pid].moreComing = true;
+    if (it.status === 'done' && !it.anglesPending && it.angles?.length && !haveAngles.has(pid)) items[pid].angles = it.angles;
   }
   res.json({ total: job.items.size, done, failed, finished: !!job.finished, items, base: req.query.hb ? undefined : job.base });
 });

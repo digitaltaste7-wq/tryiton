@@ -2,7 +2,7 @@
 // Photos and results live only in memory: the shopper photo is dropped 1 hour after the lookbook
 // finishes (so a failed piece can be retried), and everything is wiped after JOB_TTL.
 import crypto from 'node:crypto';
-import { tryOn, loadProductImage, makeStudioBase, nearestRatio } from './ai.js';
+import { tryOn, loadProductImage, makeStudioBase, nearestRatio, jewelleryAngles, JEWELLERY_ANGLES } from './ai.js';
 import { db, bumpUsage } from './db.js';
 
 const JOB_TTL = 6 * 3600e3;
@@ -45,11 +45,31 @@ async function runOne(job, site, p) {
     });
     item.status = 'done'; item.ms = Date.now() - item.started;
     bumpUsage(site.id, 'images');
+    // Jewellery: the main look is shown straight away, then extra close-up angles follow
+    if (category === 'jewellery' && JEWELLERY_ANGLES > 0) {
+      item.angles = []; item.anglesPending = true;
+      try {
+        const extra = await jewelleryAngles({ look: item.image, product, sub, title: p.title });
+        item.angles = extra;
+        for (let i = 0; i < extra.length; i++) bumpUsage(site.id, 'images');
+      } catch (e) { console.error('[tryon] angles failed', p.title, String(e.message).slice(0, 160)); }
+      item.anglesPending = false;
+    }
   } catch (e) {
-    item.status = 'failed'; item.error = String(e.message || e).slice(0, 200);
+    const msg = String(e.message || e);
+    if (/429|exhausted|quota/i.test(msg) && (item.autoRetries || 0) < 2 && job.person) {
+      // Google is busy: keep the card "working", wait, and quietly try again instead of showing a failure
+      item.autoRetries = (item.autoRetries || 0) + 1;
+      console.error('[tryon] busy, will retry', p.title, 'in 40s');
+      release();
+      await new Promise((r) => setTimeout(r, 40000));
+      return runOne(job, site, p);
+    }
+    item.status = 'failed'; item.error = msg.slice(0, 200);
     bumpUsage(site.id, 'failed');
     console.error('[tryon] failed', site.domain, p.title, item.error);
-  } finally { release(); }
+  }
+  release();
 }
 
 function finish(job) {
@@ -98,7 +118,7 @@ export function retryItem(job, site, pid) {
   const p = job.products.get(String(pid));
   if (!item || !p || item.status !== 'failed') return false;
   if (!job.person) return 'expired';
-  item.status = 'queued'; job.finished = null;
+  item.status = 'queued'; item.angles = []; job.finished = null;
   runOne(job, site, p).then(() => finish(job));
   return true;
 }

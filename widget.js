@@ -11,7 +11,7 @@
   var API = new URL(script.src).origin + '/api/w/' + encodeURIComponent(SITE);
   var cfg = null, state = null, shadow = null, root = null, els = {};
   var pollTimer = null, pollErrors = 0;
-  var LOOK_VERSION = 3; // bump to discard looks saved by an older version
+  var LOOK_VERSION = 4; // bump to discard looks saved by an older version
 
   // ---------------- small helpers ----------------
   function h(tag, attrs, kids) {
@@ -62,7 +62,7 @@
   }
   function save() {
     if (!state) return;
-    var copy = { v: LOOK_VERSION, gender: state.gender, name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, failed: state.failed, at: state.at, finished: state.finished };
+    var copy = { v: LOOK_VERSION, gender: state.gender, name: state.name, kind: state.kind, species: state.species, job: state.job, ids: state.ids, looks: state.looks, angles: state.angles, failed: state.failed, at: state.at, finished: state.finished };
     idb().then(function (d) { d.transaction(STORE, 'readwrite').objectStore(STORE).put(copy, SITE); }).catch(function () {});
   }
   function load() {
@@ -288,7 +288,7 @@
         body: JSON.stringify({ photo: ph.data, w: ph.w, h: ph.h, name: draft.name, species: cfg.niche === 'pet' ? draft.kind : null, products: picks.map(function (p) { return p.id; }) }),
       });
     }).then(function (r) {
-      state = { name: draft.name, kind: draft.kind, gender: bothGenders() ? draft.gender : null, job: r.job, ids: r.products.map(String), looks: {}, failed: {}, at: Date.now(), finished: false };
+      state = { name: draft.name, kind: draft.kind, gender: bothGenders() ? draft.gender : null, job: r.job, ids: r.products.map(String), looks: {}, angles: {}, failed: {}, at: Date.now(), finished: false };
       save();
       showProgress();
       poll();
@@ -299,16 +299,20 @@
     clearTimeout(pollTimer);
     if (!state || state.finished) return;
     var have = Object.keys(state.looks).join(',');
-    api('/job/' + state.job + '?have=' + encodeURIComponent(have) + (state.base ? '&hb=1' : '')).then(function (r) {
+    state.angles = state.angles || {};
+    var ha = Object.keys(state.angles).join(',');
+    api('/job/' + state.job + '?have=' + encodeURIComponent(have) + '&ha=' + encodeURIComponent(ha) + (state.base ? '&hb=1' : '')).then(function (r) {
       if (r.base && !state.base) state.base = r.base;
       Object.keys(r.items).forEach(function (id) {
         var it = r.items[id];
         if (it.image) state.looks[id] = it.image;
+        if (it.angles && it.angles.length) state.angles[id] = it.angles;
         if (it.status === 'failed') state.failed[id] = true; else delete state.failed[id];
       });
       pollErrors = 0;
       state.finished = r.finished;
       save(); render(); swapPage();
+      if (view === 'detail' && detailId && state.angles[detailId] && !detailAngles) showDetail(detailId);
       if (!r.finished) pollTimer = setTimeout(poll, 1200);
     }).catch(function () {
       // network blip: try again; lookbook gone (e.g. server restarted): keep what we have, mark the rest
@@ -406,13 +410,28 @@
       els.grid.appendChild(card);
     });
   }
+  var detailId = null, detailAngles = false;
   function showDetail(id) {
-    view = 'detail';
+    view = 'detail'; detailId = id;
     var p = product(id), look = state.looks[id], on = true;
+    var shots = [look].concat((state.angles && state.angles[id]) || []);
+    detailAngles = shots.length > 1;
     var img = h('img', { src: look, alt: p.title });
     var tog = h('button', { class: 'tog', type: 'button', onclick: function () {
       on = !on; img.src = on ? look : p.image; tog.textContent = on ? '⇄ Original' : '⇄ On ' + state.name;
     }, text: '⇄ Original' });
+    var thumbs = null;
+    if (shots.length > 1) {
+      thumbs = h('div', { class: 'angles' }, shots.map(function (src, i) {
+        var b = h('button', { type: 'button', class: i ? '' : 'on', 'aria-label': 'View ' + (i + 1), onclick: function () {
+          look = src; on = true; img.src = src; tog.textContent = '⇄ Original';
+          Array.prototype.forEach.call(thumbs.children, function (c) { c.className = ''; }); b.className = 'on';
+        } }, [h('img', { src: src, alt: '' })]);
+        return b;
+      }));
+    } else if (cfg.niche === 'jewellery' && !state.finished) {
+      thumbs = h('p', { class: 'muted small', text: 'More angles are on their way…' });
+    }
     var buy = null;
     if (cfg.platform === 'shopify' && p.variant_id && !PREVIEW) {
       buy = h('button', { class: 'primary', type: 'button', text: 'Add to bag', onclick: function () {
@@ -425,7 +444,7 @@
     var view_ = p.url ? h('a', { class: buy ? 'secondary' : 'primary', href: p.url, target: PREVIEW ? '_blank' : null, rel: 'noopener', text: 'View product' }) : null;
     frame([
       h('div', { class: 'detail' }, [
-        h('div', { class: 'big' }, [img, tog]),
+        h('div', {}, [h('div', { class: 'big' }, [img, tog]), thumbs]),
         h('div', { class: 'info' }, [
           h('button', { class: 'link back', type: 'button', text: '← Lookbook', onclick: function () { showBook(); } }),
           h('h2', { text: p.title }), h('p', { class: 'price', text: money(p.price) }),
@@ -600,6 +619,10 @@
     '.tog{position:absolute;left:12px;bottom:12px;border:0;background:rgba(255,255,255,.95);border-radius:999px;padding:8px 13px;font-weight:600;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,.15)}',
     '.info{padding-top:8px}.info h2{margin-top:8px}',
     '.back{margin:0;padding:0}',
+    '.angles{display:flex;gap:8px;margin-top:10px}',
+    '.angles button{border:2px solid transparent;border-radius:10px;padding:0;overflow:hidden;width:64px;height:80px;background:var(--cream);cursor:pointer}',
+    '.angles button.on{border-color:var(--ink)}',
+    '.angles img{width:100%;height:100%;object-fit:cover;display:block}',
     '.price{font-size:18px;margin:0 0 6px}',
     '.info .muted{margin:14px 0 0}',
     '@media (max-width:640px){.overlay{align-items:flex-end;padding:0}.modal{max-width:none!important;border-radius:18px 18px 0 0;max-height:92vh;padding:26px 18px 20px}.detail{grid-template-columns:1fr;gap:12px}.grid{grid-template-columns:1fr 1fr;gap:12px}.launch,.chip{right:14px;bottom:14px}.launch.left,.chip.left{left:14px}}',

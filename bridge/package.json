@@ -1,0 +1,5 @@
+{
+  "name": "tryon-vertex-bridge",
+  "main": "index.js",
+  "dependencies": { "@google-cloud/functions-framework": "^3.4.0" }
+}
